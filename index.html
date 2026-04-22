@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TMA Tracker — Digital Garden</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Outfit:wght@400;500;600;700;800;900&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.26.9/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.15.3/Recharts.min.js"></script>
+<style>
+:root {
+  --bg:#f4f4f0; --surface:#ffffff; --surface2:#f0f0ec; --surface3:#e8e8e4;
+  --border:#e0e0d8; --border2:#d0d0c8;
+  --accent:#5b4fff; --accent2:#4a3fee; --accent-dim:rgba(91,79,255,0.08); --accent-glow:rgba(91,79,255,0.15);
+  --text:#1a1a2e; --text2:#5a5a7a; --text3:#9a9ab0;
+  --red:#e05555; --orange:#e07a30; --green:#2dcc70;
+  --mono:'DM Mono',monospace; --sans:'Outfit',sans-serif; --display:'Space Grotesk',sans-serif;
+  --shadow-sm:0 1px 3px rgba(26,26,46,0.08); --shadow:0 4px 16px rgba(26,26,46,0.10); --shadow-lg:0 12px 40px rgba(26,26,46,0.14);
+  --radius:10px;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:var(--bg);color:var(--text);font-family:var(--mono);font-size:13px;min-height:100vh;overflow:hidden;}
+#root{display:flex;height:100vh;overflow:hidden;}
+::-webkit-scrollbar{width:5px;height:5px;}
+::-webkit-scrollbar-track{background:var(--surface2);}
+::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px;}
+input:focus{border-color:var(--accent) !important;box-shadow:0 0 0 3px var(--accent-glow) !important;outline:none !important;}
+input[type=number]{-moz-appearance:textfield;}
+input::-webkit-outer-spin-button,input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0;}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes fadeup{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-type="module">
+const { useState, useRef, useCallback, useEffect } = React;
+const { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } = Recharts;
+
+// ══════════════════════════════════════════════════
+// CONSTANTS
+// ══════════════════════════════════════════════════
+const MONTHS = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
+const MONTH_NUMS = ['01','02','03','04','05','06','07','08','09','10','11','12'];
+
+// ══════════════════════════════════════════════════
+// CLAUDE API
+// ══════════════════════════════════════════════════
+async function callClaude(messages, opts = {}) {
+  const apiKey = localStorage.getItem('tma-api-key') || '';
+  if (!apiKey) throw new Error('Clé API Anthropic non configurée');
+  const body = { model: 'claude-sonnet-4-20250514', max_tokens: opts.maxTokens || 1000, messages };
+  const headers = { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' };
+  if (opts.mcpServers) body.mcp_servers = opts.mcpServers;
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST', headers, body: JSON.stringify(body)
+  });
+  if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
+  return await res.json();
+}
+
+function extractText(data) {
+  return data.content?.filter(b => b.type === 'text').map(b => b.text).join('\n') || '';
+}
+function safeJson(text, fallback) {
+  try { const c = text.replace(/```json|```/g, '').trim(); const m = c.match(/[\[{][\s\S]*[\]}]/); return JSON.parse(m ? m[0] : c); } catch { return fallback; }
+}
+
+// ══════════════════════════════════════════════════
+// LOCAL STORAGE
+// ══════════════════════════════════════════════════
+const STORAGE_KEY = 'tma-tracker-v2';
+function storageSave(data) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch {} }
+function storageLoad() { try { const s = localStorage.getItem(STORAGE_KEY); return s ? JSON.parse(s) : null; } catch { return null; } }
+
+// ══════════════════════════════════════════════════
+// DESIGN TOKENS
+// ══════════════════════════════════════════════════
+const C = {
+  bg:'#f4f4f0', surface:'#ffffff', surface2:'#f0f0ec', surface3:'#e8e8e4',
+  border:'#e0e0d8', border2:'#d0d0c8',
+  accent:'#5b4fff', green:'#2dcc70', red:'#e05555', orange:'#e07a30',
+  text:'#1a1a2e', text2:'#5a5a7a', text3:'#9a9ab0',
+};
+const card = (x = {}) => ({ background:C.surface, borderRadius:12, border:`1px solid ${C.border}`, overflow:'hidden', boxShadow:'0 1px 3px rgba(26,26,46,0.08)', ...x });
+const inp = (x = {}) => ({ padding:'8px 10px', background:C.surface2, border:`1.5px solid ${C.border}`, borderRadius:8, color:C.text, fontSize:12, fontFamily:'inherit', boxSizing:'border-box', width:'100%', outline:'none', transition:'all 0.15s', ...x });
+
+function Btn({ variant = 'ghost', children, ...props }) {
+  const s = {
+    accent: { background:C.accent, color:'#fff', border:'none' },
+    ghost: { background:C.surface3, color:C.text2, border:`1px solid ${C.border2}` },
+    danger: { background:'rgba(224,85,85,0.1)', color:C.red, border:'1px solid rgba(224,85,85,0.2)' },
+  };
+  return (
+    <button {...props} style={{ padding:'8px 14px', borderRadius:8, cursor:'pointer', fontWeight:600, fontSize:12, fontFamily:"'Outfit',sans-serif", display:'inline-flex', alignItems:'center', gap:5, transition:'all 0.15s', ...(s[variant]||s.ghost), ...(props.disabled?{opacity:0.45,cursor:'not-allowed'}:{}), ...props.style }}>
+      {children}
+    </button>
+  );
+}
+
+// ══════════════════════════════════════════════════
+// EXCEL EXPORT
+// ══════════════════════════════════════════════════
+function exportXLS(monthName, year, tickets) {
+  const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const total = tickets.reduce((s,t) => s+(parseFloat(t.heures)||0), 0);
+  const rows = tickets.map((t,i) => `<Row ss:Index="${i+4}" ss:AutoFitHeight="0" ss:Height="38"><Cell ss:Index="2" ss:StyleID="data"><Data ss:Type="String">${esc(t.key)}</Data></Cell><Cell ss:StyleID="dataCtr"><Data ss:Type="String">${esc(t.site)}</Data></Cell><Cell ss:StyleID="dataL"><Data ss:Type="String">${esc(t.description)}</Data></Cell><Cell ss:StyleID="dataCtr"><Data ss:Type="Number">${t.heures||0}</Data></Cell></Row>`).join('');
+  const last = 3+tickets.length;
+  const xml = `<?xml version="1.0"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Styles><Style ss:ID="title"><Font ss:FontName="Arial" ss:Size="18" ss:Bold="1" ss:Color="#FFFFFF"/><Interior ss:Color="#5D838D" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/></Style><Style ss:ID="hdr"><Font ss:FontName="Arial" ss:Size="12" ss:Bold="1" ss:Color="#424340"/><Interior ss:Color="#D1DEE1" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:WrapText="1"/></Style><Style ss:ID="data"><Font ss:FontName="Arial" ss:Size="11" ss:Color="#404040"/><Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:WrapText="1"/></Style><Style ss:ID="dataCtr"><Font ss:FontName="Arial" ss:Size="11" ss:Color="#404040"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/></Style><Style ss:ID="dataL"><Font ss:FontName="Arial" ss:Size="11" ss:Color="#404040"/><Alignment ss:Horizontal="Left" ss:Vertical="Center" ss:Indent="1" ss:WrapText="1"/></Style><Style ss:ID="tot"><Font ss:FontName="Arial" ss:Size="12" ss:Bold="1" ss:Color="#404040"/><Interior ss:Color="#B8CBD0" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/></Style></Styles><Worksheet ss:Name="${monthName} ${year}"><Table><Column ss:Index="1" ss:Width="20"/><Column ss:Index="2" ss:Width="130"/><Column ss:Index="3" ss:Width="80"/><Column ss:Index="4" ss:Width="400"/><Column ss:Index="5" ss:Width="100"/><Row ss:Index="1" ss:Height="16"/><Row ss:Index="2" ss:Height="55"><Cell ss:Index="2" ss:MergeAcross="3" ss:StyleID="title"><Data ss:Type="String">TMA : ${monthName} ${year}</Data></Cell></Row><Row ss:Index="3" ss:Height="46"><Cell ss:Index="2" ss:StyleID="hdr"><Data ss:Type="String">Ticket JIRA</Data></Cell><Cell ss:StyleID="hdr"><Data ss:Type="String">Sites</Data></Cell><Cell ss:StyleID="hdr"><Data ss:Type="String">Description</Data></Cell><Cell ss:StyleID="hdr"><Data ss:Type="String">Temps passé&#10;(heures)</Data></Cell></Row>${rows}<Row ss:Index="${last+1}" ss:Height="38"><Cell ss:Index="2" ss:MergeAcross="2" ss:StyleID="tot"><Data ss:Type="String">Total temps passé du mois (heures)</Data></Cell><Cell ss:StyleID="tot"><Data ss:Type="Number">${total}</Data></Cell></Row><Row ss:Index="${last+2}" ss:Height="38"><Cell ss:Index="2" ss:MergeAcross="2" ss:StyleID="tot"><Data ss:Type="String">Total temps passé du mois (jours)</Data></Cell><Cell ss:StyleID="tot"><Data ss:Type="Number">${(total/8).toFixed(2)}</Data></Cell></Row></Table></Worksheet></Workbook>`;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([xml], { type:'application/vnd.ms-excel;charset=utf-8' }));
+  a.download = `TMA-${monthName}-${year}.xls`;
+  a.click();
+}
+
+// ══════════════════════════════════════════════════
+// CONFIG MODAL
+// ══════════════════════════════════════════════════
+function ConfigModal({ config, onSave, onClose }) {
+  const [d, setD] = React.useState(config);
+  const [apiKey, setApiKey] = React.useState(localStorage.getItem('tma-api-key') || '');
+  const set = (k, v) => setD(p => ({ ...p, [k]: v }));
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(26,26,46,0.45)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:300, backdropFilter:'blur(8px)' }}>
+      <div style={{ background:C.surface, border:`1px solid ${C.border}`, borderRadius:16, padding:32, width:480, boxShadow:'0 24px 80px rgba(26,26,46,0.2)', maxHeight:'90vh', overflowY:'auto', animation:'fadeup 0.2s ease' }}>
+        <div style={{ fontFamily:"'Outfit',sans-serif", fontSize:18, fontWeight:800, marginBottom:4, color:C.text, letterSpacing:'-0.3px' }}>Configuration projet</div>
+        <div style={{ fontSize:12, color:C.text3, marginBottom:24 }}>Paramètres du projet TMA</div>
+        {[
+          ['Clé projet JIRA','projectKey','text','ex: AL, ORC, ATM'],
+          ['URL projet Jira','jiraUrl','text','https://...atlassian.net/jira/…'],
+          ['Nom client','client','text','ex: ALTYN, ORCAB'],
+          ['Responsable','responsable','text','ex: Guillaume Bourdeau'],
+          ['Année','year','number','2026'],
+          ['Budget total (heures)','budgetHeures','number','200'],
+        ].map(([label,key,type,ph]) => (
+          <div key={key} style={{ marginBottom:14 }}>
+            <label style={{ display:'block', fontSize:11, color:C.text2, marginBottom:5, fontWeight:600, textTransform:'uppercase', letterSpacing:0.5, fontFamily:"'Outfit',sans-serif" }}>{label}</label>
+            <input type={type} value={d[key]||''} placeholder={ph}
+              onChange={e => set(key, type==='number'?(parseFloat(e.target.value)||0):e.target.value)}
+              style={{ ...inp(), fontSize:13, padding:'10px 14px' }} />
+          </div>
+        ))}
+        <div style={{ borderTop:`1px solid ${C.border}`, marginTop:10, paddingTop:18, marginBottom:14 }}>
+          <label style={{ display:'block', fontSize:11, color:C.text2, marginBottom:5, fontWeight:600, textTransform:'uppercase', letterSpacing:0.5, fontFamily:"'Outfit',sans-serif" }}>Clé API Anthropic (pour l'IA)</label>
+          <input type="password" value={apiKey} placeholder="sk-ant-…"
+            onChange={e => setApiKey(e.target.value)}
+            style={{ ...inp(), fontSize:13, padding:'10px 14px' }} />
+          <div style={{ fontSize:10, color:C.text3, marginTop:4 }}>Stockée localement. Nécessaire pour l'extraction et la répartition IA.</div>
+        </div>
+        <div style={{ display:'flex', gap:10, marginTop:20 }}>
+          <Btn variant="accent" onClick={() => { localStorage.setItem('tma-api-key', apiKey); onSave(d); onClose(); }} style={{ flex:1, padding:'11px', fontSize:13, justifyContent:'center' }}>Sauvegarder</Btn>
+          <Btn onClick={onClose} style={{ padding:'11px 18px', fontSize:13 }}>Annuler</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════
+// DASHBOARD
+// ══════════════════════════════════════════════════
+function DashboardView({ config, monthTotals, totalConsumed, remaining, pct }) {
+  const col = pct > 90 ? C.red : pct > 70 ? C.orange : C.green;
+  let cumul = 0;
+  return (
+    <div style={{ padding:28, maxWidth:1060, margin:'0 auto' }}>
+      <div style={{ fontSize:10, letterSpacing:4, color:C.text3, marginBottom:6, textTransform:'uppercase', fontFamily:"'Outfit',sans-serif", fontWeight:600 }}>Tableau de bord</div>
+      <h1 style={{ margin:'0 0 6px', fontSize:22, fontWeight:800, fontFamily:"'Space Grotesk',sans-serif", color:C.text, letterSpacing:'-0.5px' }}>{config.client} · {config.year}</h1>
+      {config.responsable && <div style={{ fontSize:12, color:C.text3, marginBottom:24 }}>Responsable : {config.responsable}</div>}
+
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:12, marginBottom:20 }}>
+        {[
+          { label:'Budget total', val:config.budgetHeures+'h', sub:(config.budgetHeures/8).toFixed(1)+' jours achetés', c:C.text },
+          { label:'Consommé', val:totalConsumed+'h', sub:(totalConsumed/8).toFixed(2)+' jours', c:C.accent },
+          { label:'Restant', val:Math.abs(remaining)+'h', sub:remaining>=0?'disponibles':'⚠ dépassement', c:remaining<0?C.red:C.green },
+          { label:'Avancement', val:pct+'%', sub:'du budget total', c:col },
+        ].map((k,i) => (
+          <div key={i} style={{ background:C.surface, borderRadius:12, border:`1px solid ${k.c===C.red?'rgba(224,85,85,0.3)':C.border}`, padding:20, position:'relative', overflow:'hidden', boxShadow:'var(--shadow-sm)', transition:'all 0.2s' }}>
+            <div style={{ position:'absolute', top:0, left:0, right:0, height:3, background:`linear-gradient(90deg,${C.accent},#ff6b9d)` }} />
+            <div style={{ fontSize:10, color:C.text3, textTransform:'uppercase', letterSpacing:0.8, marginBottom:8, fontFamily:"'Outfit',sans-serif", fontWeight:600 }}>{k.label}</div>
+            <div style={{ fontSize:28, fontWeight:800, fontFamily:"'Space Grotesk',sans-serif", color:k.c, lineHeight:1, letterSpacing:'-1px' }}>{k.val}</div>
+            <div style={{ fontSize:11, color:C.text3, marginTop:5 }}>{k.sub}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Progress bar */}
+      <div style={{ ...card({ padding:20, marginBottom:20 }) }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
+          <span style={{ fontWeight:700, fontFamily:"'Outfit',sans-serif", fontSize:13, color:C.text }}>Consommation du budget</span>
+          <span style={{ fontFamily:"'DM Mono',monospace", color:col, fontWeight:700, fontSize:18 }}>{pct}%</span>
+        </div>
+        <div style={{ height:8, background:C.surface3, borderRadius:4, overflow:'hidden' }}>
+          <div style={{ height:'100%', width:Math.min(pct,100)+'%', background:`linear-gradient(90deg,${col},${col}dd)`, borderRadius:4, transition:'width 0.6s ease' }} />
+        </div>
+        <div style={{ display:'flex', justifyContent:'space-between', marginTop:8, fontSize:11, color:C.text3 }}>
+          <span>0h</span>
+          <span style={{ fontFamily:"'DM Mono',monospace" }}>{totalConsumed}h consommé · {config.budgetHeures}h budget</span>
+          <span>{config.budgetHeures}h</span>
+        </div>
+      </div>
+
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 380px', gap:16 }}>
+        {/* Chart */}
+        <div style={{ ...card({ padding:22 }) }}>
+          <div style={{ fontWeight:700, marginBottom:16, fontSize:13, fontFamily:"'Outfit',sans-serif", color:C.text }}>Heures par mois — {config.year}</div>
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={monthTotals} barSize={22} margin={{ top:0, right:0, bottom:0, left:-24 }}>
+              <XAxis dataKey="abbr" tick={{ fill:C.text3, fontSize:10, fontFamily:"'DM Mono',monospace" }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fill:C.text3, fontSize:10, fontFamily:"'DM Mono',monospace" }} axisLine={false} tickLine={false} />
+              <Tooltip contentStyle={{ background:C.surface, border:`1px solid ${C.border}`, borderRadius:10, color:C.text, fontSize:12, boxShadow:'var(--shadow)' }} formatter={v=>[v+'h','Heures']} cursor={{ fill:'rgba(91,79,255,0.05)' }} />
+              <Bar dataKey="heures" radius={[4,4,0,0]}>
+                {monthTotals.map((e,i) => <Cell key={i} fill={e.heures>0?C.accent:C.surface3} />)}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Synthesis table */}
+        <div style={{ ...card() }}>
+          <div style={{ padding:'12px 18px', borderBottom:`1px solid ${C.border}`, fontWeight:700, fontSize:12, fontFamily:"'Outfit',sans-serif", color:C.text }}>Synthèse · Budget {config.budgetHeures}h</div>
+          <div style={{ overflowY:'auto', maxHeight:260 }}>
+            <table style={{ width:'100%', borderCollapse:'collapse' }}>
+              <thead>
+                <tr style={{ background:C.surface2 }}>
+                  {['Mois','h','j','Cumul','Reste'].map(h => (
+                    <th key={h} style={{ padding:'8px 12px', textAlign:'left', fontSize:9, color:C.text3, fontWeight:700, letterSpacing:0.7, textTransform:'uppercase', whiteSpace:'nowrap', fontFamily:"'Outfit',sans-serif" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {monthTotals.map((m,i) => {
+                  cumul += m.heures;
+                  const rest = config.budgetHeures - cumul;
+                  const active = m.heures > 0;
+                  return (
+                    <tr key={i} style={{ borderTop:`1px solid ${C.border}`, opacity:active?1:0.35 }}>
+                      <td style={{ padding:'8px 12px', fontSize:12, fontWeight:500, fontFamily:"'Outfit',sans-serif" }}>{m.name}</td>
+                      <td style={{ padding:'8px 12px', fontFamily:"'DM Mono',monospace", fontSize:12, color:active?C.accent:'inherit' }}>{active?m.heures:'—'}</td>
+                      <td style={{ padding:'8px 12px', fontFamily:"'DM Mono',monospace", fontSize:11, color:C.text3 }}>{active?(m.heures/8).toFixed(2):'—'}</td>
+                      <td style={{ padding:'8px 12px', fontFamily:"'DM Mono',monospace", fontSize:12 }}>{cumul>0?cumul:'—'}</td>
+                      <td style={{ padding:'8px 12px', fontFamily:"'DM Mono',monospace", fontSize:12, fontWeight:600, color:rest<0?C.red:rest<config.budgetHeures*0.2?C.orange:C.green }}>{cumul>0?rest:'—'}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                <tr style={{ background:C.surface2, borderTop:`2px solid ${C.border}` }}>
+                  <td style={{ padding:'10px 12px', fontWeight:700, fontSize:12, fontFamily:"'Outfit',sans-serif" }}>Total</td>
+                  <td style={{ padding:'10px 12px', fontFamily:"'DM Mono',monospace", fontSize:13, color:C.accent, fontWeight:700 }}>{totalConsumed}h</td>
+                  <td style={{ padding:'10px 12px', fontFamily:"'DM Mono',monospace", fontSize:12, color:C.text3 }}>{(totalConsumed/8).toFixed(2)}j</td>
+                  <td colSpan={2} />
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════
+// MONTH VIEW
+// ══════════════════════════════════════════════════
+function MonthView({ monthName, year, projectKey, month, loadingState, onScreenshots, onAddTicket, onUpdateTicket, onRemoveTicket, onDistribute, onFetchJira, onExport }) {
+  const fileRef = useRef();
+  const total = month.tickets.reduce((s,t) => s+(parseFloat(t.heures)||0), 0);
+  const extractedTotal = month.extractedTimes?.reduce((s,t) => s+t.heures, 0) || 0;
+  const delta = Math.round((extractedTotal - total)*10)/10;
+  const gpH = month.tickets.filter(t=>/gestion|recette/i.test(t.description)).reduce((s,t)=>s+(parseFloat(t.heures)||0),0);
+  const gpPct = total > 0 ? Math.round(gpH/total*100) : 0;
+  const isExtracting = !!loadingState[monthName+'_extract'];
+  const isDist = !!loadingState[monthName+'_dist'];
+  const isJira = !!loadingState[monthName+'_jira'];
+  const hasApiKey = !!localStorage.getItem('tma-api-key');
+
+  return (
+    <div style={{ padding:28 }}>
+      <div style={{ fontSize:10, letterSpacing:4, color:C.text3, marginBottom:6, textTransform:'uppercase', fontFamily:"'Outfit',sans-serif", fontWeight:600 }}>Suivi mensuel</div>
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
+        <h1 style={{ margin:0, fontSize:22, fontWeight:800, fontFamily:"'Space Grotesk',sans-serif", color:C.text, letterSpacing:'-0.5px' }}>TMA : {monthName} {year}</h1>
+        <div style={{ display:'flex', gap:8 }}>
+          <Btn onClick={onFetchJira} disabled={isJira}>{isJira?'⏳ Chargement…':'🎯 Tickets Jira'}</Btn>
+          {month.tickets.length>0 && <Btn variant="accent" onClick={onExport}>⬇ Export XLS</Btn>}
+        </div>
+      </div>
+
+      <div style={{ display:'grid', gridTemplateColumns:'1fr 280px', gap:16 }}>
+        <div>
+          {/* Drop zone */}
+          <div
+            onClick={() => !isExtracting && fileRef.current?.click()}
+            onDrop={e => { e.preventDefault(); const f=[...e.dataTransfer.files].filter(f=>f.type.startsWith('image/')); if(f.length) onScreenshots(f); }}
+            onDragOver={e => e.preventDefault()}
+            style={{ border:`2px dashed ${isExtracting?C.accent:C.border2}`, borderRadius:12, padding:24, textAlign:'center', cursor:isExtracting?'default':'pointer', marginBottom:16, background:isExtracting?C.accent+'08':C.surface, transition:'all 0.2s' }}
+          >
+            <input ref={fileRef} type="file" multiple accept="image/*" style={{ display:'none' }} onChange={e=>{ if(e.target.files.length) onScreenshots([...e.target.files]); e.target.value=''; }} />
+            {isExtracting ? (
+              <div style={{ color:C.accent }}>
+                <div style={{ fontSize:28, marginBottom:8, display:'inline-block', animation:'spin 1s linear infinite' }}>⏳</div>
+                <div style={{ fontWeight:700, fontFamily:"'Outfit',sans-serif" }}>Extraction en cours…</div>
+                <div style={{ fontSize:12, color:C.text3, marginTop:4 }}>L'IA analyse vos captures et ventile par mois</div>
+              </div>
+            ) : (
+              <>
+                <div style={{ fontSize:28, marginBottom:6 }}>📸</div>
+                <div style={{ fontWeight:700, fontFamily:"'Outfit',sans-serif", fontSize:13, color:C.text }}>Importer des captures d'écran</div>
+                <div style={{ fontSize:11, color:C.text3, marginTop:4 }}>Glisser-déposer ou cliquer · Ventilation automatique par date</div>
+                {!hasApiKey && <div style={{ fontSize:11, color:C.orange, marginTop:6 }}>⚠ Clé API requise — Config projet</div>}
+              </>
+            )}
+          </div>
+
+          {/* Tickets table */}
+          <div style={{ ...card() }}>
+            <div style={{ padding:'12px 16px', borderBottom:`1px solid ${C.border}`, display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:8 }}>
+              <span style={{ fontWeight:700, fontSize:13, fontFamily:"'Outfit',sans-serif", color:C.text }}>Tickets · {month.tickets.length}</span>
+              <div style={{ display:'flex', gap:6 }}>
+                <Btn onClick={()=>onAddTicket({ key:'', description:'', site:'', heures:0 })}>+ Ligne</Btn>
+                <Btn onClick={()=>onAddTicket({ key:'', description:'Gestion de projet / Recette', site:'', heures:0 })}>+ GP/Recette</Btn>
+                <Btn onClick={()=>onAddTicket({ key:'MEP', description:'Mise en production', site:'', heures:1 })}>+ MEP (1h)</Btn>
+              </div>
+            </div>
+            {month.tickets.length===0 ? (
+              <div style={{ padding:48, textAlign:'center', color:C.text3, fontSize:12, fontFamily:"'Outfit',sans-serif" }}>Aucun ticket · Importez des captures, récupérez depuis Jira ou ajoutez manuellement</div>
+            ) : (
+              <div style={{ overflowX:'auto' }}>
+                <table style={{ width:'100%', borderCollapse:'collapse', tableLayout:'fixed' }}>
+                  <colgroup><col style={{ width:108 }}/><col style={{ width:85 }}/><col/><col style={{ width:76 }}/><col style={{ width:34 }}/></colgroup>
+                  <thead>
+                    <tr style={{ background:C.surface2 }}>
+                      {['Ticket JIRA','Site','Description','Heures',''].map((h,i)=>(
+                        <th key={i} style={{ padding:'8px 10px', textAlign:'left', fontSize:9, color:C.text3, fontWeight:700, letterSpacing:0.7, textTransform:'uppercase', fontFamily:"'Outfit',sans-serif" }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {month.tickets.map(t=>(
+                      <tr key={t.id} style={{ borderTop:`1px solid ${C.border}` }}>
+                        <td style={{ padding:'4px 8px' }}><input value={t.key} onChange={e=>onUpdateTicket(t.id,'key',e.target.value)} placeholder={projectKey+'-???'} style={inp({ fontFamily:"'DM Mono',monospace", fontSize:11 })} /></td>
+                        <td style={{ padding:'4px 8px' }}><input value={t.site} onChange={e=>onUpdateTicket(t.id,'site',e.target.value)} placeholder="—" style={inp()} /></td>
+                        <td style={{ padding:'4px 8px' }}><input value={t.description} onChange={e=>onUpdateTicket(t.id,'description',e.target.value)} placeholder="Description" style={inp()} /></td>
+                        <td style={{ padding:'4px 8px' }}><input type="number" value={t.heures} min={0} step={0.5} onChange={e=>onUpdateTicket(t.id,'heures',parseFloat(e.target.value)||0)} style={inp({ textAlign:'center', fontFamily:"'DM Mono',monospace", color:C.accent, fontWeight:600 })} /></td>
+                        <td style={{ padding:'4px 4px', textAlign:'center' }}><button onClick={()=>onRemoveTicket(t.id)} style={{ background:'none', border:'none', color:'rgba(224,85,85,0.45)', cursor:'pointer', fontSize:18, lineHeight:1, padding:2 }}>×</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr style={{ background:C.surface2, borderTop:`2px solid ${C.border}` }}>
+                      <td colSpan={3} style={{ padding:'12px 10px', fontWeight:700, fontSize:13, fontFamily:"'Outfit',sans-serif", color:C.text }}>Total du mois (heures)</td>
+                      <td style={{ padding:'12px 10px', fontFamily:"'DM Mono',monospace", color:C.accent, fontWeight:700, fontSize:16 }}>{total}h</td>
+                      <td />
+                    </tr>
+                    <tr style={{ background:C.surface2 }}>
+                      <td colSpan={3} style={{ padding:'6px 10px', fontSize:11, color:C.text3 }}>Total du mois (jours)</td>
+                      <td style={{ padding:'6px 10px', fontFamily:"'DM Mono',monospace", fontSize:11, color:C.text3 }}>{(total/8).toFixed(2)}j</td>
+                      <td />
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Right panel */}
+        <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+          {month.extractedTimes && (
+            <div style={{ ...card() }}>
+              <div style={{ padding:'12px 16px', borderBottom:`1px solid ${C.border}`, fontWeight:700, fontSize:12, display:'flex', alignItems:'center', justifyContent:'space-between', fontFamily:"'Outfit',sans-serif", color:C.text }}>
+                <span>⏱ Temps extraits</span>
+                {month.extractedRows && <span style={{ fontSize:10, color:C.text3, fontFamily:"'DM Mono',monospace" }}>{month.extractedRows.length} lignes</span>}
+              </div>
+              <div style={{ padding:'10px 16px 0' }}>
+                {month.extractedTimes.map((t,i)=>(
+                  <div key={i} style={{ display:'flex', justifyContent:'space-between', padding:'6px 0', borderBottom:`1px solid ${C.border}`, fontSize:12 }}>
+                    <span style={{ color:C.text2 }}>{t.personne}</span>
+                    <span style={{ fontFamily:"'DM Mono',monospace", color:C.accent, fontWeight:600 }}>{t.heures}h</span>
+                  </div>
+                ))}
+                <div style={{ display:'flex', justifyContent:'space-between', padding:'8px 0 4px', fontWeight:700, borderTop:`2px solid ${C.border}`, marginTop:2, fontFamily:"'Outfit',sans-serif" }}>
+                  <span style={{ color:C.text }}>Total</span>
+                  <span style={{ fontFamily:"'DM Mono',monospace", color:C.accent }}>{extractedTotal}h</span>
+                </div>
+              </div>
+              {month.extractedRows?.length > 0 && (
+                <details style={{ margin:'0 16px 8px' }}>
+                  <summary style={{ fontSize:10, color:C.text3, cursor:'pointer', padding:'6px 0', userSelect:'none' }}>
+                    Détail par date ({month.extractedRows.length} lignes)
+                  </summary>
+                  <div style={{ maxHeight:180, overflowY:'auto', marginTop:6, borderRadius:8, border:`1px solid ${C.border}`, background:C.surface2 }}>
+                    {month.extractedRows.map((r,i)=>(
+                      <div key={i} style={{ display:'grid', gridTemplateColumns:'80px 1fr 46px', gap:6, padding:'5px 10px', borderBottom:`1px solid ${C.border}`, fontSize:11, alignItems:'center' }}>
+                        <span style={{ fontFamily:"'DM Mono',monospace", color:C.text3, fontSize:10 }}>{r.date}</span>
+                        <span style={{ color:C.text2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                          {r.personne}{r.commentaire?<span style={{ color:C.text3, fontStyle:'italic' }}> · {r.commentaire}</span>:null}
+                        </span>
+                        <span style={{ fontFamily:"'DM Mono',monospace", color:C.accent, textAlign:'right', fontWeight:600 }}>{r.heures}h</span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+              <div style={{ padding:'0 16px 14px' }}>
+                {extractedTotal > 0 && (
+                  <div style={{ marginBottom:10, padding:'8px 12px', borderRadius:8, fontSize:12, background:Math.abs(delta)<0.05?'rgba(45,204,112,0.1)':'rgba(224,122,48,0.08)', color:Math.abs(delta)<0.05?C.green:C.orange, border:`1px solid ${Math.abs(delta)<0.05?'rgba(45,204,112,0.25)':'rgba(224,122,48,0.2)'}`, fontFamily:"'Outfit',sans-serif", fontWeight:500 }}>
+                    {Math.abs(delta)<0.05?'✓ Heures équilibrées':delta>0?`⚠ ${delta}h non distribuées`:`⚠ Dépassement ${-delta}h`}
+                  </div>
+                )}
+                <Btn variant="accent" onClick={onDistribute} disabled={isDist||month.tickets.length===0||!hasApiKey} style={{ width:'100%', justifyContent:'center', padding:'10px' }}>
+                  {isDist?'🧠 Répartition…':'🧠 Répartir avec l\'IA'}
+                </Btn>
+                {!hasApiKey && <div style={{ fontSize:10, color:C.orange, textAlign:'center', marginTop:5 }}>Clé API requise</div>}
+                {month.tickets.length===0 && hasApiKey && <div style={{ fontSize:10, color:C.text3, textAlign:'center', marginTop:5 }}>Ajoutez d'abord des tickets</div>}
+              </div>
+            </div>
+          )}
+
+          <div style={{ ...card({ padding:18 }) }}>
+            <div style={{ fontWeight:700, fontSize:13, marginBottom:14, fontFamily:"'Outfit',sans-serif", color:C.text }}>Récapitulatif</div>
+            {[['Temps saisi',total+'h',C.accent],['En jours',(total/8).toFixed(2)+'j',C.text3],['Nb tickets',month.tickets.length,C.text3]].map(([l,v,c])=>(
+              <div key={l} style={{ display:'flex', justifyContent:'space-between', padding:'7px 0', borderBottom:`1px solid ${C.border}`, fontSize:12 }}>
+                <span style={{ color:C.text2 }}>{l}</span>
+                <span style={{ fontFamily:"'DM Mono',monospace", color:c, fontWeight:600 }}>{v}</span>
+              </div>
+            ))}
+            {total > 0 && (
+              <div style={{ marginTop:14, padding:'12px 14px', borderRadius:10, background:gpPct>30?'rgba(224,85,85,0.06)':'rgba(45,204,112,0.06)', border:`1px solid ${gpPct>30?'rgba(224,85,85,0.2)':'rgba(45,204,112,0.2)'}` }}>
+                <div style={{ fontSize:10, color:C.text3, marginBottom:4, textTransform:'uppercase', letterSpacing:0.8, fontFamily:"'Outfit',sans-serif", fontWeight:600 }}>GP / Recette</div>
+                <div style={{ fontFamily:"'DM Mono',monospace", fontWeight:700, color:gpPct>30?C.red:C.green, fontSize:20 }}>{gpPct}%</div>
+                <div style={{ fontSize:11, color:gpPct>30?C.red:C.green, marginTop:3, fontFamily:"'Outfit',sans-serif" }}>{gpPct>30?'⚠ Dépasse 30% max':'✓ Conforme (≤ 30%)'}</div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════
+// DEFAULTS & ROOT
+// ══════════════════════════════════════════════════
+const EMPTY_MONTHS = () => Object.fromEntries(MONTHS.map(m => [m, { tickets:[], extractedTimes:null, extractedRows:null }]));
+const DEFAULT_CONFIG = { projectKey:'AL', client:'ALTYN', responsable:'', year:2026, budgetHeures:200, jiraUrl:'https://digitalgarden-fr.atlassian.net/jira/software/c/projects/AL/boards/1068' };
+
+function TMATracker() {
+  const [config, setConfig]               = useState(DEFAULT_CONFIG);
+  const [months, setMonths]               = useState(EMPTY_MONTHS);
+  const [view, setView]                   = useState('dashboard');
+  const [loadingState, setLoadingState]   = useState({});
+  const [showConfig, setShowConfig]       = useState(false);
+  const [toast, setToast]                 = useState(null);
+  const [storageStatus, setStorageStatus] = useState('loading');
+  const importRef = useRef();
+  const saveTimer = useRef(null);
+
+  // Load on mount
+  useEffect(() => {
+    const saved = storageLoad();
+    if (saved?.config) setConfig(c => ({ ...DEFAULT_CONFIG, ...saved.config }));
+    if (saved?.months) {
+      const base = EMPTY_MONTHS();
+      MONTHS.forEach(m => { if (saved.months[m]) base[m] = { ...base[m], ...saved.months[m] }; });
+      setMonths(base);
+    }
+    setStorageStatus('ok');
+  }, []);
+
+  // Debounced auto-save
+  const triggerSave = useCallback((cfg, mths) => {
+    clearTimeout(saveTimer.current);
+    setStorageStatus('saving');
+    saveTimer.current = setTimeout(() => {
+      storageSave({ config: cfg, months: mths, savedAt: new Date().toISOString() });
+      setStorageStatus('saved');
+      setTimeout(() => setStorageStatus('ok'), 2000);
+    }, 800);
+  }, []);
+
+  const handleSetConfig = useCallback(newCfg => {
+    setConfig(newCfg);
+    setMonths(prev => { triggerSave(newCfg, prev); return prev; });
+  }, [triggerSave]);
+
+  const handleSetMonths = useCallback(fn => {
+    setMonths(prev => {
+      const next = typeof fn === 'function' ? fn(prev) : fn;
+      triggerSave(config, next);
+      return next;
+    });
+  }, [config, triggerSave]);
+
+  // Helpers
+  const setLoading = (k, v) => setLoadingState(p => ({ ...p, [k]: v }));
+  const updateMonth = useCallback((name, fn) => handleSetMonths(p => ({ ...p, [name]: fn(p[name]) })), [handleSetMonths]);
+  const addTicket = (name, d={}) => updateMonth(name, m => ({ ...m, tickets:[...m.tickets,{id:Date.now()+Math.random(),key:'',description:'',site:'',heures:0,...d}] }));
+  const updateTicket = (name, id, f, v) => updateMonth(name, m => ({ ...m, tickets:m.tickets.map(t=>t.id===id?{...t,[f]:v}:t) }));
+  const removeTicket = (name, id) => updateMonth(name, m => ({ ...m, tickets:m.tickets.filter(t=>t.id!==id) }));
+
+  // Screenshot extraction
+  const handleScreenshots = async (currentMonth, files) => {
+    const imgs = [];
+    for (const f of files) {
+      const b64 = await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result.split(',')[1]); r.onerror=rej; r.readAsDataURL(f); });
+      imgs.push({ b64, type: f.type||'image/png' });
+    }
+    setLoading(currentMonth+'_extract', true);
+    try {
+      const content = [
+        ...imgs.map(img => ({ type:'image', source:{ type:'base64', media_type:img.type, data:img.b64 } })),
+        { type:'text', text:`Analyse ces captures d'écran d'un outil de suivi de temps (ERP, Dolibarr, GULFSTREAM, Odoo…).
+Extrais CHAQUE LIGNE individuelle avec sa date, personne et heures.
+Conversions: HH:MM:SS→décimal (01:30:00→1.5), HH:MM→décimal. Date format YYYY-MM-DD.
+Réponds UNIQUEMENT avec du JSON valide, sans backtick ni texte:
+[{"date":"2026-01-13","personne":"Prénom Nom","heures":1.0,"commentaire":"optionnel"}]` }
+      ];
+      const data = await callClaude([{ role:'user', content }], { maxTokens:1500 });
+      const rows = safeJson(extractText(data), []);
+      if (!rows.length) { showToast('⚠ Aucune donnée extraite'); setLoading(currentMonth+'_extract', false); return; }
+
+      const byMonth = {};
+      for (const row of rows) {
+        const d = row.date ? new Date(row.date) : null;
+        if (!d || isNaN(d)) continue;
+        const mName = MONTHS[d.getMonth()];
+        const yr = d.getFullYear();
+        const key = `${mName}_${yr}`;
+        if (!byMonth[key]) byMonth[key] = { mName, yr, rows:[] };
+        byMonth[key].rows.push({ ...row, heures: Math.round((row.heures||0)*4)/4 });
+      }
+
+      handleSetMonths(prev => {
+        const next = { ...prev };
+        for (const { mName, yr, rows } of Object.values(byMonth)) {
+          if (yr !== config.year) continue;
+          const pp = {};
+          rows.forEach(r => { pp[r.personne] = (pp[r.personne]||0) + r.heures; });
+          next[mName] = { ...next[mName],
+            extractedTimes: Object.entries(pp).map(([p,h]) => ({ personne:p, heures:Math.round(h*4)/4 })),
+            extractedRows: rows
+          };
+        }
+        return next;
+      });
+
+      const summary = Object.values(byMonth).filter(({ yr }) => yr===config.year).map(({ mName, rows }) => `${mName}: ${Math.round(rows.reduce((s,r)=>s+r.heures,0)*4)/4}h`).join(' · ');
+      if (summary) showToast(`✓ Ventilé → ${summary}`);
+    } catch(e) { console.error(e); showToast('⚠ ' + e.message); }
+    setLoading(currentMonth+'_extract', false);
+  };
+
+  // AI distribution
+  const distributeWithAI = async name => {
+    const m = months[name];
+    const total = m.extractedTimes?.reduce((s,t)=>s+t.heures,0) || 0;
+    if (!total || !m.tickets.length) return;
+    setLoading(name+'_dist', true);
+    try {
+      const prompt = `Répartis exactement ${total}h sur ces tickets TMA.
+RÈGLES: MEP=1h fixe · GP/Recette≤30% (max ${Math.floor(total*0.3*2)/2}h) · Story/BUILD=plus · Bug=moins · Somme exacte=${total}h · Arrondi 0.5h.
+Tickets: ${JSON.stringify(m.tickets.map(t=>({id:t.id,key:t.key||'—',desc:t.description})))}
+JSON uniquement: [{"id":<number>,"heures":<number>}]`;
+      const data = await callClaude([{ role:'user', content:prompt }], { maxTokens:600 });
+      const dist = safeJson(extractText(data), []);
+      updateMonth(name, m => ({ ...m, tickets:m.tickets.map(t=>{ const d=dist.find(x=>x.id===t.id); return d?{...t,heures:d.heures}:t; }) }));
+      showToast('✓ Répartition terminée');
+    } catch(e) { console.error(e); showToast('⚠ ' + e.message); }
+    setLoading(name+'_dist', false);
+  };
+
+  // Jira fetch (direct via Atlassian MCP — requires API key)
+  const fetchJira = async name => {
+    const idx=MONTHS.indexOf(name), y=config.year;
+    const m1=MONTH_NUMS[idx], nextIdx=(idx+2)%12, m2=MONTH_NUMS[nextIdx], y2=nextIdx<2?y+1:y;
+    setLoading(name+'_jira', true);
+    try {
+      const jql=`project = ${config.projectKey} AND updated >= "${y}-${m1}-01" AND updated <= "${y2}-${m2}-01" ORDER BY key ASC`;
+      const data = await callClaude([{ role:'user', content:`Jira JQL: ${jql}\nRetourne JSON: [{"key":"${config.projectKey}-1","summary":"...","type":"Story"}]` }], { maxTokens:2000, mcpServers:[{ type:'url', url:'https://mcp.atlassian.com/v1/mcp', name:'atlassian' }] });
+      const arr = safeJson(extractText(data), []);
+      const newT = arr.filter(t=>t.key&&!String(t.key).includes('undefined')).map(t=>({ id:Date.now()+Math.random(), key:t.key, description:t.summary||'', site:'', heures:0 }));
+      if (newT.length) {
+        updateMonth(name, m => ({ ...m, tickets:[...m.tickets,...newT.filter(nt=>!m.tickets.some(et=>et.key===nt.key))] }));
+        showToast(`✓ ${newT.length} ticket(s) importés`);
+      } else showToast('Aucun ticket trouvé');
+    } catch(e) { console.error(e); showToast('⚠ ' + e.message); }
+    setLoading(name+'_jira', false);
+  };
+
+  // JSON export / import
+  const exportJson = () => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([JSON.stringify({config,months,exportedAt:new Date().toISOString(),version:2},null,2)],{type:'application/json'}));
+    a.download = `TMA-${config.client||'projet'}-${config.year}-backup.json`;
+    a.click();
+  };
+  const importJson = file => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      try {
+        const data = JSON.parse(e.target.result);
+        const newCfg = data.config ? { ...DEFAULT_CONFIG, ...data.config } : config;
+        if (data.config) setConfig(newCfg);
+        if (data.months) {
+          const base = EMPTY_MONTHS();
+          MONTHS.forEach(m => { if(data.months[m]) base[m]={...base[m],...data.months[m]}; });
+          handleSetMonths(base);
+        }
+        showToast('✓ Données importées');
+      } catch { showToast('⚠ Fichier JSON invalide'); }
+    };
+    reader.readAsText(file);
+  };
+
+  const showToast = msg => { setToast(msg); setTimeout(()=>setToast(null), 4000); };
+
+  // Computed
+  const monthTotals = MONTHS.map((name,i) => ({ name, abbr:name.slice(0,3), idx:i, heures:months[name].tickets.reduce((s,t)=>s+(parseFloat(t.heures)||0),0) }));
+  const totalConsumed = monthTotals.reduce((s,m)=>s+m.heures,0);
+  const remaining = config.budgetHeures - totalConsumed;
+  const pct = config.budgetHeures > 0 ? Math.min(100, Math.round(totalConsumed/config.budgetHeures*100)) : 0;
+  const statusDot = { loading:{c:C.text3,label:'Chargement…'}, saving:{c:C.orange,label:'Sauvegarde…',anim:true}, saved:{c:C.green,label:'Sauvegardé ✓'}, ok:{c:C.text3,label:'Auto-save actif'} }[storageStatus] || { c:C.text3,label:'' };
+
+  return (
+    <div style={{ display:'flex', height:'100vh', background:C.bg, fontFamily:"'DM Mono',monospace", color:C.text, overflow:'hidden' }}>
+      {/* Toast */}
+      {toast && (
+        <div onClick={()=>setToast(null)} style={{ position:'fixed', bottom:24, left:'50%', transform:'translateX(-50%)', background:C.surface, border:`1px solid ${C.border}`, borderLeft:toast.includes('⚠')?`4px solid ${C.orange}`:`4px solid ${C.green}`, color:C.text, padding:'12px 22px', borderRadius:10, fontWeight:500, fontSize:12, zIndex:500, cursor:'pointer', boxShadow:'var(--shadow-lg)', animation:'fadeup 0.2s ease', whiteSpace:'nowrap', fontFamily:"'Outfit',sans-serif" }}>
+          {toast}
+        </div>
+      )}
+
+      {/* Sidebar */}
+      <div style={{ width:210, background:C.surface, borderRight:`1px solid ${C.border}`, display:'flex', flexDirection:'column', flexShrink:0, boxShadow:'1px 0 8px rgba(26,26,46,0.04)' }}>
+        <div style={{ padding:'18px 16px 14px', borderBottom:`1px solid ${C.border}` }}>
+          <img src="https://cdn.prod.website-files.com/65a795ebdb778fdc1cdb37d4/664e0daf8695392b24a87f94_logo-digital-garden.svg" alt="DG" style={{ height:22, marginBottom:6, display:'block' }} />
+          <div style={{ fontSize:14, fontWeight:800, fontFamily:"'Outfit',sans-serif", color:C.text }}>TMA Tracker</div>
+          <div style={{ fontSize:11, color:C.text3, fontFamily:"'DM Mono',monospace", marginTop:2 }}>{config.projectKey} · {config.year}</div>
+          {config.jiraUrl && (
+            <a href={config.jiraUrl} target="_blank" rel="noopener noreferrer" style={{ display:'inline-flex', alignItems:'center', gap:4, marginTop:6, fontSize:10, color:C.accent, textDecoration:'none' }}>
+              ↗ Ouvrir Jira
+            </a>
+          )}
+        </div>
+
+        <div style={{ padding:'12px 16px 14px', borderBottom:`1px solid ${C.border}` }}>
+          <div style={{ display:'flex', justifyContent:'space-between', fontSize:10, color:C.text3, marginBottom:5 }}>
+            <span>Budget</span>
+            <span style={{ fontFamily:"'DM Mono',monospace", color:pct>90?C.red:pct>70?C.orange:C.green }}>{pct}%</span>
+          </div>
+          <div style={{ height:4, background:C.surface3, borderRadius:2, overflow:'hidden' }}>
+            <div style={{ height:'100%', width:Math.min(pct,100)+'%', background:pct>90?C.red:pct>70?C.orange:C.green, borderRadius:2, transition:'width 0.4s ease' }} />
+          </div>
+          <div style={{ fontSize:9, color:C.text3, marginTop:4, fontFamily:"'DM Mono',monospace" }}>{totalConsumed}h / {config.budgetHeures}h</div>
+        </div>
+
+        <nav style={{ flex:1, padding:'6px 0', overflowY:'auto' }}>
+          <div onClick={()=>setView('dashboard')} style={{ padding:'8px 16px', cursor:'pointer', borderRadius:8, margin:'0 8px 2px', background:view==='dashboard'?C.accent+'12':'transparent', color:view==='dashboard'?C.accent:C.text2, fontWeight:view==='dashboard'?700:400, fontSize:12, fontFamily:"'Outfit',sans-serif", transition:'all 0.15s' }}>
+            📊 Dashboard
+          </div>
+          <div style={{ fontSize:9, letterSpacing:2, color:C.text3, padding:'10px 16px 4px', textTransform:'uppercase', fontWeight:700, fontFamily:"'Outfit',sans-serif" }}>Mois {config.year}</div>
+          {MONTHS.map((name,i)=>{
+            const h=monthTotals[i].heures, active=view===name;
+            return (
+              <div key={name} onClick={()=>setView(name)} style={{ padding:'6px 16px', cursor:'pointer', borderRadius:8, margin:'0 8px 1px', background:active?C.surface2:'transparent', display:'flex', justifyContent:'space-between', alignItems:'center', fontSize:12, color:active?C.text:C.text2, transition:'all 0.15s', fontFamily:"'Outfit',sans-serif" }}>
+                <span style={{ fontWeight:active?700:400 }}>{name}</span>
+                {h>0 && <span style={{ fontSize:10, fontFamily:"'DM Mono',monospace", color:active?C.accent:C.text3, background:C.surface3, padding:'2px 7px', borderRadius:4 }}>{h}h</span>}
+              </div>
+            );
+          })}
+        </nav>
+
+        <div style={{ padding:'12px 16px', borderTop:`1px solid ${C.border}`, display:'flex', flexDirection:'column', gap:6 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:6, height:16 }}>
+            <span style={{ width:6, height:6, borderRadius:'50%', background:statusDot.c, display:'inline-block', ...(statusDot.anim?{animation:'pulse 0.8s ease infinite'}:{}) }} />
+            <span style={{ fontSize:9, color:statusDot.c }}>{statusDot.label}</span>
+          </div>
+          <Btn onClick={()=>setShowConfig(true)} style={{ width:'100%', justifyContent:'center', fontSize:11 }}>⚙ Config projet</Btn>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:6 }}>
+            <Btn onClick={exportJson} style={{ justifyContent:'center', fontSize:10, padding:'7px 6px' }}>⬇ Export</Btn>
+            <Btn onClick={()=>importRef.current?.click()} style={{ justifyContent:'center', fontSize:10, padding:'7px 6px' }}>⬆ Import</Btn>
+          </div>
+          <input ref={importRef} type="file" accept=".json" style={{ display:'none' }} onChange={e=>{ if(e.target.files[0]){importJson(e.target.files[0]);e.target.value='';} }} />
+        </div>
+      </div>
+
+      {/* Main content */}
+      <div style={{ flex:1, overflowY:'auto' }}>
+        {view==='dashboard' ? (
+          <DashboardView config={config} monthTotals={monthTotals} totalConsumed={totalConsumed} remaining={remaining} pct={pct} />
+        ) : (
+          <MonthView key={view} monthName={view} year={config.year} projectKey={config.projectKey}
+            month={months[view]} loadingState={loadingState}
+            onScreenshots={files=>handleScreenshots(view,files)}
+            onAddTicket={d=>addTicket(view,d)}
+            onUpdateTicket={(id,f,v)=>updateTicket(view,id,f,v)}
+            onRemoveTicket={id=>removeTicket(view,id)}
+            onDistribute={()=>distributeWithAI(view)}
+            onFetchJira={()=>fetchJira(view)}
+            onExport={()=>exportXLS(view,config.year,months[view].tickets)}
+          />
+        )}
+      </div>
+
+      {showConfig && <ConfigModal config={config} onSave={handleSetConfig} onClose={()=>setShowConfig(false)} />}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<TMATracker />);
+</script>
+</body>
+</html>
