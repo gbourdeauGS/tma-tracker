@@ -452,6 +452,76 @@ function MonthView({ monthName, year, projectKey, month, loadingState, onScreens
 }
 
 // ══════════════════════════════════════════════════
+// PROJECT PICKER
+// ══════════════════════════════════════════════════
+function ProjectPicker({ projects, onSelect, onCreate, onDelete, user }) {
+  const [showNew, setShowNew] = React.useState(projects.length === 0);
+  const [newCfg, setNewCfg] = React.useState({ ...DEFAULT_CONFIG });
+  const setF = (k, v) => setNewCfg(p => ({ ...p, [k]: v }));
+
+  return (
+    <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100vh', background:C.bg, fontFamily:"'DM Mono',monospace" }}>
+      <div style={{ width:560, maxHeight:'90vh', overflowY:'auto' }}>
+        <div style={{ textAlign:'center', marginBottom:28 }}>
+          <img src="https://cdn.prod.website-files.com/65a795ebdb778fdc1cdb37d4/664e0daf8695392b24a87f94_logo-digital-garden.svg" alt="DG" style={{ height:28, marginBottom:10 }} />
+          <div style={{ fontSize:20, fontWeight:800, fontFamily:"'Outfit',sans-serif", color:C.text }}>TMA Tracker</div>
+          <div style={{ fontSize:12, color:C.text3, marginTop:4 }}>{user?.user_metadata?.user_name || user?.email} — {projects.length} projet{projects.length>1?'s':''}</div>
+        </div>
+
+        {!showNew && projects.length > 0 && (
+          <div style={{ display:'flex', flexDirection:'column', gap:10, marginBottom:16 }}>
+            {projects.map(p => (
+              <div key={p.id} onClick={() => onSelect(p.id)} style={{ ...card({ padding:'18px 22px', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'space-between', transition:'all 0.15s' }) }}>
+                <div>
+                  <div style={{ fontSize:15, fontWeight:700, fontFamily:"'Outfit',sans-serif", color:C.text }}>{p.config?.client || 'Sans nom'}</div>
+                  <div style={{ fontSize:11, color:C.text3, marginTop:3, fontFamily:"'DM Mono',monospace" }}>{p.config?.projectKey || '—'} · {p.config?.year || '—'} · {p.config?.budgetHeures || 0}h</div>
+                  {p.config?.responsable && <div style={{ fontSize:11, color:C.text3, marginTop:2 }}>{p.config.responsable}</div>}
+                </div>
+                <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                  <div style={{ fontSize:10, color:C.text3 }}>{p.updated_at ? new Date(p.updated_at).toLocaleDateString('fr-FR') : ''}</div>
+                  <button onClick={e => { e.stopPropagation(); if(confirm(`Supprimer ${p.config?.client} — ${p.config?.year} ?`)) onDelete(p.id); }} style={{ background:'none', border:'none', color:'rgba(224,85,85,0.4)', cursor:'pointer', fontSize:16, padding:'2px 4px', lineHeight:1 }} title="Supprimer">×</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {!showNew && (
+          <Btn variant="accent" onClick={() => setShowNew(true)} style={{ width:'100%', justifyContent:'center', padding:'12px', fontSize:13 }}>
+            + Nouveau projet TMA
+          </Btn>
+        )}
+
+        {showNew && (
+          <div style={{ ...card({ padding:28 }), animation:'fadeup 0.2s ease' }}>
+            <div style={{ fontFamily:"'Outfit',sans-serif", fontSize:16, fontWeight:800, color:C.text, marginBottom:18 }}>Nouveau projet</div>
+            {[
+              ['Clé projet JIRA','projectKey','text','ex: AL, ORC'],
+              ['Nom client','client','text','ex: ALTYN, ORCAB'],
+              ['Responsable','responsable','text','ex: Guillaume Bourdeau'],
+              ['Année','year','number','2026'],
+              ['Budget (heures)','budgetHeures','number','200'],
+              ['URL Jira','jiraUrl','text','https://...atlassian.net/jira/…'],
+            ].map(([label,key,type,ph]) => (
+              <div key={key} style={{ marginBottom:12 }}>
+                <label style={{ display:'block', fontSize:10, color:C.text2, marginBottom:4, fontWeight:600, textTransform:'uppercase', letterSpacing:0.5, fontFamily:"'Outfit',sans-serif" }}>{label}</label>
+                <input type={type} value={newCfg[key]||''} placeholder={ph}
+                  onChange={e => setF(key, type==='number'?(parseFloat(e.target.value)||0):e.target.value)}
+                  style={{ ...inp(), fontSize:13, padding:'9px 12px' }} />
+              </div>
+            ))}
+            <div style={{ display:'flex', gap:10, marginTop:18 }}>
+              <Btn variant="accent" onClick={() => { if(!newCfg.projectKey||!newCfg.client){return;} onCreate(newCfg); }} style={{ flex:1, justifyContent:'center', padding:'11px', fontSize:13 }}>Créer le projet</Btn>
+              {projects.length > 0 && <Btn onClick={() => setShowNew(false)} style={{ padding:'11px 18px', fontSize:13 }}>Annuler</Btn>}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════
 // DEFAULTS & ROOT
 // ══════════════════════════════════════════════════
 const EMPTY_MONTHS = () => Object.fromEntries(MONTHS.map(m => [m, { tickets:[], extractedTimes:null, extractedRows:null }]));
@@ -461,19 +531,19 @@ function TMATracker() {
   const [config, setConfig]               = useState(DEFAULT_CONFIG);
   const [months, setMonths]               = useState(EMPTY_MONTHS);
   const [view, setView]                   = useState('dashboard');
-  const [loadingState, setLoadingState]   = useState({});
+  const [loadingState, setLoadingState] = useState({});
   const [showConfig, setShowConfig] = useState(false);
   const [toast, setToast] = useState(null);
   const [syncStatus, setSyncStatus] = useState('idle');
   const [sbUser, setSbUser] = useState(null);
   const [sbProjectId, setSbProjectId] = useState(null);
+  const [projectList, setProjectList] = useState(null);
   const importRef = useRef();
   const saveTimer = useRef(null);
   const autoSyncTimer = useRef(null);
   const sbUserRef = useRef(null);
   const sbProjectIdRef = useRef(null);
 
-  // Keep refs in sync for use in callbacks
   useEffect(() => { sbUserRef.current = sbUser; }, [sbUser]);
   useEffect(() => { sbProjectIdRef.current = sbProjectId; }, [sbProjectId]);
 
@@ -484,51 +554,81 @@ function TMATracker() {
     if (saved?.sbProjectId) setSbProjectId(saved.sbProjectId);
   }
 
-  async function sbPull(user) {
+  async function fetchProjectList(user) {
     const uid = user?.id; if (!uid) return;
-    setSyncStatus('syncing');
     try {
-      const { data, error } = await _sb.from('tma_projects').select('*').eq('user_id', uid).order('updated_at', { ascending: false }).limit(1).maybeSingle();
+      const { data, error } = await _sb.from('tma_projects').select('id,slug,config,updated_at').eq('user_id', uid).order('updated_at', { ascending: false });
       if (error) throw error;
-      if (data) {
-        const cfg = { ...DEFAULT_CONFIG, ...(data.config || {}) };
-        const base = EMPTY_MONTHS();
-        if (data.months) MONTHS.forEach(m => { if (data.months[m]) base[m] = { ...base[m], ...data.months[m] }; });
-        setConfig(cfg); setMonths(base); setSbProjectId(data.id);
-        lsSave({ config: cfg, months: base, sbProjectId: data.id });
-        setSyncStatus('synced'); setTimeout(() => setSyncStatus('idle'), 2000);
-      } else { loadFromLS(); setSyncStatus('idle'); }
-    } catch (e) { console.error('Pull:', e); loadFromLS(); setSyncStatus('error'); }
+      setProjectList(data || []);
+      if (data?.length === 1) await loadProject(data[0].id, user);
+    } catch (e) { console.error('FetchList:', e); setProjectList([]); }
   }
 
-  async function sbPush(cfg, mths, projId) {
-    const uid = sbUserRef.current?.id; if (!uid) return;
+  async function loadProject(projectId, user) {
+    const uid = (user || sbUser)?.id; if (!uid) return;
     setSyncStatus('syncing');
     try {
-      const slug = ((cfg).projectKey+'-'+(cfg).year).toLowerCase();
+      const { data, error } = await _sb.from('tma_projects').select('*').eq('id', projectId).eq('user_id', uid).single();
+      if (error) throw error;
+      const cfg = { ...DEFAULT_CONFIG, ...(data.config || {}) };
+      const base = EMPTY_MONTHS();
+      if (data.months) MONTHS.forEach(m => { if (data.months[m]) base[m] = { ...base[m], ...data.months[m] }; });
+      setConfig(cfg); setMonths(base); setSbProjectId(data.id); sbProjectIdRef.current = data.id;
+      lsSave({ config: cfg, months: base, sbProjectId: data.id });
+      setSyncStatus('synced'); setTimeout(() => setSyncStatus('idle'), 2000);
+    } catch (e) { console.error('LoadProject:', e); setSyncStatus('error'); }
+  }
+
+  async function createProject(cfg) {
+    const uid = sbUser?.id; if (!uid) return;
+    setSyncStatus('syncing');
+    try {
+      const slug = (cfg.projectKey+'-'+cfg.year).toLowerCase();
+      const emptyMonths = EMPTY_MONTHS();
+      const { data, error } = await _sb.from('tma_projects').insert({ user_id: uid, slug, config: cfg, months: emptyMonths, updated_at: new Date().toISOString() }).select().single();
+      if (error) throw error;
+      setConfig(cfg); setMonths(emptyMonths); setSbProjectId(data.id); sbProjectIdRef.current = data.id;
+      setProjectList(prev => [data, ...(prev||[])]);
+      lsSave({ config: cfg, months: emptyMonths, sbProjectId: data.id });
+      setSyncStatus('synced'); setTimeout(() => setSyncStatus('idle'), 2000);
+      showToast('✓ Projet créé');
+    } catch (e) { console.error('Create:', e); setSyncStatus('error'); showToast('⚠ ' + e.message); }
+  }
+
+  async function deleteProject(projectId) {
+    const uid = sbUser?.id; if (!uid) return;
+    try {
+      const { error } = await _sb.from('tma_projects').delete().eq('id', projectId).eq('user_id', uid);
+      if (error) throw error;
+      const newList = (projectList||[]).filter(p => p.id !== projectId);
+      setProjectList(newList);
+      if (sbProjectId === projectId) { setSbProjectId(null); sbProjectIdRef.current = null; }
+      showToast('✓ Projet supprimé');
+    } catch (e) { console.error('Delete:', e); showToast('⚠ ' + e.message); }
+  }
+
+  function switchProject() { setSbProjectId(null); sbProjectIdRef.current = null; fetchProjectList(sbUser); }
+
+  async function sbPush(cfg, mths, projId) {
+    const uid = sbUserRef.current?.id; if (!uid || !projId) return;
+    setSyncStatus('syncing');
+    try {
+      const slug = (cfg.projectKey+'-'+cfg.year).toLowerCase();
       const payload = { user_id: uid, slug, config: cfg, months: mths, updated_at: new Date().toISOString() };
-      if (projId) {
-        const { error } = await _sb.from('tma_projects').update(payload).eq('id', projId);
-        if (error) throw error;
-      } else {
-        const { data, error } = await _sb.from('tma_projects').insert(payload).select().single();
-        if (error) throw error;
-        setSbProjectId(data.id);
-        sbProjectIdRef.current = data.id;
-      }
+      const { error } = await _sb.from('tma_projects').update(payload).eq('id', projId);
+      if (error) throw error;
       setSyncStatus('synced'); setTimeout(() => setSyncStatus('idle'), 2000);
     } catch (e) { console.error('Push:', e); setSyncStatus('error'); }
   }
 
-  // Auth init
   useEffect(() => {
     (async () => {
       const { data:{ session } } = await _sb.auth.getSession();
-      if (session) { setSbUser(session.user); sbUserRef.current = session.user; await sbPull(session.user); }
-      else loadFromLS();
+      if (session) { setSbUser(session.user); sbUserRef.current = session.user; await fetchProjectList(session.user); }
+      else { loadFromLS(); setProjectList([]); }
       _sb.auth.onAuthStateChange(async (_ev, session) => {
         const u = session?.user || null; setSbUser(u); sbUserRef.current = u;
-        if (u && _ev === 'SIGNED_IN') await sbPull(u);
+        if (u && _ev === 'SIGNED_IN') await fetchProjectList(u);
       });
     })();
   }, []);
@@ -537,15 +637,14 @@ function TMATracker() {
     const { error } = await _sb.auth.signInWithOAuth({ provider: 'github', options: { redirectTo: window.location.href.split('#')[0].split('?')[0] } });
     if (error) showToast('⚠ ' + error.message);
   }
-  async function signOut() { await _sb.auth.signOut(); setSbUser(null); setSbProjectId(null); setSyncStatus('idle'); showToast('Déconnecté'); }
+  async function signOut() { await _sb.auth.signOut(); setSbUser(null); setSbProjectId(null); setProjectList(null); setSyncStatus('idle'); showToast('Déconnecté'); }
 
-  // Save: localStorage immediate + Supabase debounced 4s
   const triggerSave = useCallback((cfg, mths) => {
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       const pid = sbProjectIdRef.current;
       lsSave({ config: cfg, months: mths, sbProjectId: pid, savedAt: new Date().toISOString() });
-      if (sbUserRef.current) {
+      if (sbUserRef.current && pid) {
         clearTimeout(autoSyncTimer.current);
         setSyncStatus('syncing');
         autoSyncTimer.current = setTimeout(() => sbPush(cfg, mths, pid), 4000);
@@ -696,6 +795,24 @@ JSON uniquement: [{"id":<number>,"heures":<number>}]`;
   const pct = config.budgetHeures > 0 ? Math.min(100, Math.round(totalConsumed/config.budgetHeures*100)) : 0;
   const syncDot = { idle:{c:C.text3,label:'',anim:false}, syncing:{c:C.orange,label:'Sync…',anim:true}, synced:{c:C.green,label:'Synced ✓',anim:false}, error:{c:C.red,label:'Erreur sync',anim:false} }[syncStatus] || {c:C.text3,label:'',anim:false};
 
+  // Show project picker if logged in but no project loaded
+  if (sbUser && !sbProjectId && projectList !== null) {
+    return (
+      <div style={{ fontFamily:"'DM Mono',monospace" }}>
+        {toast && (
+          <div onClick={()=>setToast(null)} style={{ position:'fixed', bottom:24, left:'50%', transform:'translateX(-50%)', background:C.surface, border:`1px solid ${C.border}`, borderLeft:`4px solid ${C.green}`, color:C.text, padding:'12px 22px', borderRadius:10, fontWeight:500, fontSize:12, zIndex:500, cursor:'pointer', boxShadow:'var(--shadow-lg)', animation:'fadeup 0.2s ease', fontFamily:"'Outfit',sans-serif" }}>
+            {toast}
+          </div>
+        )}
+        <ProjectPicker projects={projectList} user={sbUser}
+          onSelect={id => loadProject(id, sbUser)}
+          onCreate={cfg => createProject(cfg)}
+          onDelete={id => deleteProject(id)}
+        />
+      </div>
+    );
+  }
+
   return (
     <div style={{ display:'flex', height:'100vh', background:C.bg, fontFamily:"'DM Mono',monospace", color:C.text, overflow:'hidden' }}>
       {/* Toast */}
@@ -710,7 +827,10 @@ JSON uniquement: [{"id":<number>,"heures":<number>}]`;
         <div style={{ padding:'18px 16px 14px', borderBottom:`1px solid ${C.border}` }}>
           <img src="https://cdn.prod.website-files.com/65a795ebdb778fdc1cdb37d4/664e0daf8695392b24a87f94_logo-digital-garden.svg" alt="DG" style={{ height:22, marginBottom:6, display:'block' }} />
           <div style={{ fontSize:14, fontWeight:800, fontFamily:"'Outfit',sans-serif", color:C.text }}>TMA Tracker</div>
-          <div style={{ fontSize:11, color:C.text3, fontFamily:"'DM Mono',monospace", marginTop:2 }}>{config.projectKey} · {config.year}</div>
+          <div style={{ display:'flex', alignItems:'center', gap:6, marginTop:2 }}>
+            <span style={{ fontSize:11, color:C.text3, fontFamily:"'DM Mono',monospace" }}>{config.projectKey} · {config.year}</span>
+            {sbUser && (projectList||[]).length > 1 && <button onClick={switchProject} title="Changer de projet" style={{ background:C.accent+'15', border:'none', cursor:'pointer', color:C.accent, fontSize:10, padding:'2px 8px', borderRadius:10, fontFamily:"'Outfit',sans-serif", fontWeight:600 }}>⇄</button>}
+          </div>
           {config.jiraUrl && (
             <a href={config.jiraUrl} target="_blank" rel="noopener noreferrer" style={{ display:'inline-flex', alignItems:'center', gap:4, marginTop:6, fontSize:10, color:C.accent, textDecoration:'none' }}>
               ↗ Ouvrir Jira
@@ -772,9 +892,10 @@ JSON uniquement: [{"id":<number>,"heures":<number>}]`;
           {sbUser && (
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:6 }}>
               <Btn onClick={()=>sbPush(config,months,sbProjectIdRef.current)} style={{ justifyContent:'center', fontSize:10, padding:'7px 6px' }}>↑ Push</Btn>
-              <Btn onClick={()=>sbPull(sbUser)} style={{ justifyContent:'center', fontSize:10, padding:'7px 6px' }}>↓ Pull</Btn>
+              <Btn onClick={()=>loadProject(sbProjectId,sbUser)} disabled={!sbProjectId} style={{ justifyContent:'center', fontSize:10, padding:'7px 6px' }}>↓ Pull</Btn>
             </div>
           )}
+          {sbUser && <Btn onClick={switchProject} style={{ width:'100%', justifyContent:'center', fontSize:10, padding:'7px 6px' }}>⇄ Projets ({(projectList||[]).length})</Btn>}
           <input ref={importRef} type="file" accept=".json" style={{ display:'none' }} onChange={e=>{ if(e.target.files[0]){importJson(e.target.files[0]);e.target.value='';} }} />
         </div>
       </div>
