@@ -56,18 +56,18 @@ const SB_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsIn
 const _sb = window.supabase.createClient(SB_URL, SB_ANON);
 
 // ══════════════════════════════════════════════════
-// CLAUDE API
+// CLAUDE API (via Supabase Edge Function)
 // ══════════════════════════════════════════════════
 async function callClaude(messages, opts = {}) {
-  const apiKey = localStorage.getItem('tma-api-key') || '';
-  if (!apiKey) throw new Error('Clé API Anthropic non configurée');
+  const { data:{ session } } = await _sb.auth.getSession();
+  if (!session) throw new Error('Non connecté — veuillez vous authentifier');
   const body = { model: 'claude-sonnet-4-20250514', max_tokens: opts.maxTokens || 1000, messages };
-  const headers = { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' };
-  if (opts.mcpServers) body.mcp_servers = opts.mcpServers;
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST', headers, body: JSON.stringify(body)
+  const res = await fetch(SB_URL + '/functions/v1/claude-proxy', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + session.access_token },
+    body: JSON.stringify(body)
   });
-  if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
+  if (!res.ok) { const err = await res.json().catch(()=>({})); throw new Error(err.error || `Erreur ${res.status}`); }
   return await res.json();
 }
 
@@ -130,7 +130,6 @@ function exportXLS(monthName, year, tickets) {
 // ══════════════════════════════════════════════════
 function ConfigModal({ config, onSave, onClose }) {
   const [d, setD] = React.useState(config);
-  const [apiKey, setApiKey] = React.useState(localStorage.getItem('tma-api-key') || '');
   const set = (k, v) => setD(p => ({ ...p, [k]: v }));
   return (
     <div style={{ position:'fixed', inset:0, background:'rgba(26,26,46,0.45)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:300, backdropFilter:'blur(8px)' }}>
@@ -152,15 +151,8 @@ function ConfigModal({ config, onSave, onClose }) {
               style={{ ...inp(), fontSize:13, padding:'10px 14px' }} />
           </div>
         ))}
-        <div style={{ borderTop:`1px solid ${C.border}`, marginTop:10, paddingTop:18, marginBottom:14 }}>
-          <label style={{ display:'block', fontSize:11, color:C.text2, marginBottom:5, fontWeight:600, textTransform:'uppercase', letterSpacing:0.5, fontFamily:"'Outfit',sans-serif" }}>Clé API Anthropic (pour l'IA)</label>
-          <input type="password" value={apiKey} placeholder="sk-ant-…"
-            onChange={e => setApiKey(e.target.value)}
-            style={{ ...inp(), fontSize:13, padding:'10px 14px' }} />
-          <div style={{ fontSize:10, color:C.text3, marginTop:4 }}>Stockée localement. Nécessaire pour l'extraction et la répartition IA.</div>
-        </div>
         <div style={{ display:'flex', gap:10, marginTop:20 }}>
-          <Btn variant="accent" onClick={() => { localStorage.setItem('tma-api-key', apiKey); onSave(d); onClose(); }} style={{ flex:1, padding:'11px', fontSize:13, justifyContent:'center' }}>Sauvegarder</Btn>
+          <Btn variant="accent" onClick={() => { onSave(d); onClose(); }} style={{ flex:1, padding:'11px', fontSize:13, justifyContent:'center' }}>Sauvegarder</Btn>
           <Btn onClick={onClose} style={{ padding:'11px 18px', fontSize:13 }}>Annuler</Btn>
         </div>
       </div>
@@ -275,7 +267,7 @@ function DashboardView({ config, monthTotals, totalConsumed, remaining, pct }) {
 // ══════════════════════════════════════════════════
 // MONTH VIEW
 // ══════════════════════════════════════════════════
-function MonthView({ monthName, year, projectKey, month, loadingState, onScreenshots, onAddTicket, onUpdateTicket, onRemoveTicket, onDistribute, onFetchJira, onExport }) {
+function MonthView({ monthName, year, projectKey, month, loadingState, isLoggedIn, onScreenshots, onAddTicket, onUpdateTicket, onRemoveTicket, onDistribute, onFetchJira, onExport }) {
   const fileRef = useRef();
   const total = month.tickets.reduce((s,t) => s+(parseFloat(t.heures)||0), 0);
   const extractedTotal = month.extractedTimes?.reduce((s,t) => s+t.heures, 0) || 0;
@@ -285,7 +277,6 @@ function MonthView({ monthName, year, projectKey, month, loadingState, onScreens
   const isExtracting = !!loadingState[monthName+'_extract'];
   const isDist = !!loadingState[monthName+'_dist'];
   const isJira = !!loadingState[monthName+'_jira'];
-  const hasApiKey = !!localStorage.getItem('tma-api-key');
 
   return (
     <div style={{ padding:28 }}>
@@ -293,7 +284,7 @@ function MonthView({ monthName, year, projectKey, month, loadingState, onScreens
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:20 }}>
         <h1 style={{ margin:0, fontSize:22, fontWeight:800, fontFamily:"'Space Grotesk',sans-serif", color:C.text, letterSpacing:'-0.5px' }}>TMA : {monthName} {year}</h1>
         <div style={{ display:'flex', gap:8 }}>
-          <Btn onClick={onFetchJira} disabled={isJira}>{isJira?'⏳ Chargement…':'🎯 Tickets Jira'}</Btn>
+          <Btn onClick={onFetchJira} disabled={isJira||!isLoggedIn}>{isJira?'⏳ Chargement…':'🎯 Tickets Jira'}</Btn>
           {month.tickets.length>0 && <Btn variant="accent" onClick={onExport}>⬇ Export XLS</Btn>}
         </div>
       </div>
@@ -319,7 +310,7 @@ function MonthView({ monthName, year, projectKey, month, loadingState, onScreens
                 <div style={{ fontSize:28, marginBottom:6 }}>📸</div>
                 <div style={{ fontWeight:700, fontFamily:"'Outfit',sans-serif", fontSize:13, color:C.text }}>Importer des captures d'écran</div>
                 <div style={{ fontSize:11, color:C.text3, marginTop:4 }}>Glisser-déposer ou cliquer · Ventilation automatique par date</div>
-                {!hasApiKey && <div style={{ fontSize:11, color:C.orange, marginTop:6 }}>⚠ Clé API requise — Config projet</div>}
+                {!isLoggedIn && <div style={{ fontSize:11, color:C.orange, marginTop:6 }}>⚠ Connexion requise pour l'IA</div>}
               </>
             )}
           </div>
@@ -420,11 +411,11 @@ function MonthView({ monthName, year, projectKey, month, loadingState, onScreens
                     {Math.abs(delta)<0.05?'✓ Heures équilibrées':delta>0?`⚠ ${delta}h non distribuées`:`⚠ Dépassement ${-delta}h`}
                   </div>
                 )}
-                <Btn variant="accent" onClick={onDistribute} disabled={isDist||month.tickets.length===0||!hasApiKey} style={{ width:'100%', justifyContent:'center', padding:'10px' }}>
+                <Btn variant="accent" onClick={onDistribute} disabled={isDist||month.tickets.length===0||!isLoggedIn} style={{ width:'100%', justifyContent:'center', padding:'10px' }}>
                   {isDist?'🧠 Répartition…':'🧠 Répartir avec l\'IA'}
                 </Btn>
-                {!hasApiKey && <div style={{ fontSize:10, color:C.orange, textAlign:'center', marginTop:5 }}>Clé API requise</div>}
-                {month.tickets.length===0 && hasApiKey && <div style={{ fontSize:10, color:C.text3, textAlign:'center', marginTop:5 }}>Ajoutez d'abord des tickets</div>}
+                {!isLoggedIn && <div style={{ fontSize:10, color:C.orange, textAlign:'center', marginTop:5 }}>Connexion requise</div>}
+                {month.tickets.length===0 && isLoggedIn && <div style={{ fontSize:10, color:C.text3, textAlign:'center', marginTop:5 }}>Ajoutez d'abord des tickets</div>}
               </div>
             </div>
           )}
@@ -906,7 +897,7 @@ JSON uniquement: [{"id":<number>,"heures":<number>}]`;
           <DashboardView config={config} monthTotals={monthTotals} totalConsumed={totalConsumed} remaining={remaining} pct={pct} />
         ) : (
           <MonthView key={view} monthName={view} year={config.year} projectKey={config.projectKey}
-            month={months[view]} loadingState={loadingState}
+            month={months[view]} loadingState={loadingState} isLoggedIn={!!sbUser}
             onScreenshots={files=>handleScreenshots(view,files)}
             onAddTicket={d=>addTicket(view,d)}
             onUpdateTicket={(id,f,v)=>updateTicket(view,id,f,v)}
